@@ -5,7 +5,8 @@ from __future__ import annotations
 import inspect
 import logging
 from collections.abc import Callable
-from typing import Any
+from copy import deepcopy
+from typing import Any, Protocol
 
 from llm.core.interface import LLMError
 from llm.core.types import (
@@ -34,6 +35,10 @@ def _generic_failure(tool_call: ToolCall) -> ToolResult:
     )
 
 ToolFunc = Callable[..., Any]
+
+
+class LLMGenerator(Protocol):
+    def generate(self, llm_input: LLMInput) -> LLMOutput: ...
 
 
 class ToolRegistry:
@@ -123,7 +128,7 @@ class ToolExecutor:
 class ReActAgent:
     def __init__(
         self,
-        provider: Any,
+        provider: LLMGenerator,
         executor: ToolExecutor,
         max_iterations: int = 10,
     ) -> None:
@@ -137,11 +142,12 @@ class ReActAgent:
 
         for _ in range(self.max_iterations):
             input_copy = LLMInput(
-                messages=messages,
+                messages=deepcopy(messages),
                 model=input.model,
                 temperature=input.temperature,
                 max_tokens=input.max_tokens,
-                tools=tools,
+                tools=deepcopy(tools),
+                metadata=deepcopy(input.metadata),
             )
 
             try:
@@ -152,19 +158,21 @@ class ReActAgent:
                     content=f"Provider error: {e.code or type(e).__name__}",
                     stop_reason="provider_error",
                 )
+            tool_calls = output.tool_calls
 
-            if not output.has_tool_calls:
+            if not tool_calls:
                 return output
 
             messages.append(
                 Message(
                     role=Role.ASSISTANT,
                     content=output.content or "",
-                    tool_calls=output.tool_calls,
+                    tool_calls=deepcopy(tool_calls),
+                    metadata=deepcopy(output.metadata),
                 )
             )
 
-            results = await self.executor.execute_all_async(output.tool_calls or [])
+            results = await self.executor.execute_all_async(tool_calls)
 
             for result in results:
                 messages.append(
